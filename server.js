@@ -7,6 +7,7 @@ const fccTesting = require('./freeCodeCamp/fcctesting.js');
 const session = require('express-session');
 const mongo = require('mongodb').MongoClient;
 const passport = require('passport');
+const GitHubStrategy = require('passport-github').Strategy;
 
 const port = process.env.PORT || 3000;
 const app = express();
@@ -19,66 +20,123 @@ app.use(bodyParser.urlencoded({ extended: true }));
 
 app.set('view engine', 'pug');
 
-mongo.connect(process.env.DATABASE, (err, db) => {
-  if (err) {
-    console.log('Database error: ' + err);
-  } else {
-    console.log('Successful database connection');
+mongo.connect(
+  process.env.DATABASE,
+  { useUnifiedTopology: true },
+  (err, client) => {
+    if (err) {
+      console.log('Database error: ' + err);
+    } else {
+      console.log('Successful database connection');
 
-    app.use(
-      session({
-        secret: process.env.SESSION_SECRET,
-        resave: true,
-        saveUninitialized: true,
-      })
-    );
-    app.use(passport.initialize());
-    app.use(passport.session());
+      const db = client.db('socialauth');
 
-    function ensureAuthenticated(req, res, next) {
-      if (req.isAuthenticated()) {
-        return next();
+      app.use(
+        session({
+          secret: process.env.SESSION_SECRET,
+          resave: true,
+          saveUninitialized: true,
+        })
+      );
+      app.use(passport.initialize());
+      app.use(passport.session());
+
+      function ensureAuthenticated(req, res, next) {
+        if (req.isAuthenticated()) {
+          return next();
+        }
+        res.redirect('/');
       }
-      res.redirect('/');
-    }
 
-    passport.serializeUser((user, done) => {
-      done(null, user.id);
-    });
-
-    passport.deserializeUser((id, done) => {
-      db.collection('socialusers').findOne({ id: id }, (err, doc) => {
-        done(null, doc);
+      passport.serializeUser((user, done) => {
+        done(null, user.id);
       });
-    });
 
-    /*
-     *  ADD YOUR CODE BELOW
-     */
+      passport.deserializeUser((id, done) => {
+        db.collection('socialusers').findOne({ id: id }, (err, doc) => {
+          done(null, doc);
+        });
+      });
 
-    /*
-     *  ADD YOUR CODE ABOVE
-     */
+      /*
+       *  ADD YOUR CODE BELOW
+       */
 
-    app.route('/').get((req, res) => {
-      res.render(process.cwd() + '/views/pug/index');
-    });
+      passport.use(
+        new GitHubStrategy(
+          {
+            clientID: process.env.GITHUB_CLIENT_ID,
+            clientSecret: process.env.GITHUB_CLIENT_SECRET,
+            callbackURL:
+              'https://eggplant-tasty-jewel.glitch.me/auth/github/callback',
+          },
+          function (accessToken, refreshToken, profile, cb) {
+            console.log(profile);
+            db.collection('socialusers').findAndModify(
+              { id: profile.id },
+              {},
+              {
+                $setOnInsert: {
+                  id: profile.id,
+                  name: profile.displayName || 'John Doe',
+                  photo: profile.photos[0].value || '',
+                  email: profile.emails
+                    ? profile.emails[0].value
+                    : 'No public email',
+                  created_on: new Date(),
+                  provider: profile.provider || '',
+                },
+                $set: {
+                  last_login: new Date(),
+                },
+                $inc: {
+                  login_count: 1,
+                },
+              },
+              { upsert: true, new: true },
+              (err, doc) => {
+                return cb(null, doc.value);
+              }
+            );
+          }
+        )
+      );
 
-    app.route('/profile').get(ensureAuthenticated, (req, res) => {
-      res.render(process.cwd() + '/views/pug/profile', { user: req.user });
-    });
+      app.route('/auth/github').get(passport.authenticate('github'));
 
-    app.route('/logout').get((req, res) => {
-      req.logout();
-      res.redirect('/');
-    });
+      app
+        .route('/auth/github/callback')
+        .get(
+          passport.authenticate('github', { failureRedirect: '/' }),
+          (req, res) => {
+            res.redirect('/profile');
+          }
+        );
 
-    app.use((req, res, next) => {
-      res.status(404).type('text').send('Not Found');
-    });
+      /*
+       *  ADD YOUR CODE ABOVE
+       */
 
-    app.listen(port, () => {
-      console.log('Listening on port ' + port);
-    });
+      app.route('/').get((req, res) => {
+        res.render(process.cwd() + '/views/pug/index');
+      });
+
+      app.route('/profile').get(ensureAuthenticated, (req, res) => {
+        res.render(process.cwd() + '/views/pug/profile', { user: req.user });
+      });
+
+      app.route('/logout').get((req, res) => {
+        req.logout();
+        res.redirect('/');
+      });
+
+      app.use((req, res, next) => {
+        res.status(404).type('text').send('Not Found');
+      });
+
+      app.listen(port, () => {
+        console.log('Listening on port ' + port);
+      });
+    }
   }
-});
+);
